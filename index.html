@@ -1,0 +1,110 @@
+<body class="is-loading">
+  <div id="app"></div>
+
+  <svg class="loading-text-filter" aria-hidden="true" focusable="false">
+    <filter id="thinLoadingText">
+      <feMorphology in="SourceAlpha" operator="erode" radius="0.45" result="thinAlpha" />
+      <feFlood flood-color="#ffffff" result="white" />
+      <feComposite in="white" in2="thinAlpha" operator="in" />
+    </filter>
+  </svg>
+
+  <div id="loadingScreen" class="loading-screen" aria-live="polite">
+    <div class="loading-panel">
+      <div class="loading-kicker">SYSTEM BOOT</div>
+      <div class="loading-title">LOADING</div>
+
+      <div class="loading-bar-frame">
+        <div id="loadingBarFill" class="loading-bar-fill"></div>
+        <div class="loading-bar-segments" aria-hidden="true"></div>
+      </div>
+
+      <div class="loading-readout">
+        <span id="loadingStatus">INITIALIZING MODEL DATA</span>
+        <span id="loadingPercent">0%</span>
+      </div>
+
+      <div id="loadingCode" class="loading-code" aria-hidden="true">
+        <div id="loadingCodeLineA" class="loading-code-line"></div>
+        <div id="loadingCodeLineB" class="loading-code-line"></div>
+      </div>
+
+      <div class="loading-subtext">MODULAR ASSEMBLY INTERFACE</div>
+    </div>
+  </div>
+
+  <div class="ui">
+    <div class="ui-header">
+      <div>
+        <div class="eyebrow">LOW-TECH MODULAR SYSTEM</div>
+        <div class="title">Modular Prototype</div>
+      </div>
+
+      <div class="status-dot" aria-hidden="true"></div>
+    </div>
+
+    <div class="button-row">
+      <button id="explodeBtn" type="button">Explode</button>
+      <button id="darkModeBtn" type="button">Dark Mode</button>
+    </div>
+
+    <div class="ao-row">
+      <button id="aoToggleBtn" type="button">AO On</button>
+      <button id="outlineToggleBtn" type="button">Outline Off</button>
+    </div>
+
+    <div class="view-control">
+      <div class="label">Camera View</div>
+      <div class="view-grid">
+        <button class="view-btn" type="button" data-view="top">Top</button>
+        <button class="view-btn" type="button" data-view="bottom">Bottom</button>
+        <button class="view-btn" type="button" data-view="front">Front</button>
+        <button class="view-btn" type="button" data-view="rear">Rear</button>
+        <button class="view-btn" type="button" data-view="left">Left</button>
+        <button class="view-btn" type="button" data-view="right">Right</button>
+        <button class="view-btn" type="button" data-view="iso-nw">ISO NW</button>
+        <button class="view-btn" type="button" data-view="iso-ne">ISO NE</button>
+        <button class="view-btn" type="button" data-view="iso-sw">ISO SW</button>
+        <button class="view-btn" type="button" data-view="iso-se">ISO SE</button>
+      </div>
+    </div>
+
+    <div class="light-control">
+      <div class="light-control-header">
+        <span>Glow Level</span>
+        <span id="glowValue">35%</span>
+      </div>
+
+      <div class="vertical-slider-wrap">
+        <input
+          id="glowSlider"
+          class="vertical-slider"
+          type="range"
+          min="0"
+          max="100"
+          value="35"
+        />
+      </div>
+    </div>
+
+    <div class="info-block">
+      <div class="label">Status</div>
+      <div id="statusText">Loading 3DM...</div>
+    </div>
+
+    <div class="info-block">
+      <div class="label">Selected Part</div>
+      <div id="partName">None</div>
+      <div id="selectionActions" class="selection-actions" hidden>
+        <button id="hidePartBtn" type="button">Hide</button>
+        <button id="showAllBtn" type="button">All Show</button>
+      </div>
+    </div>
+
+    <div class="hint">
+      Drag to orbit · Scroll to zoom · Click part to inspect
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
