@@ -15,6 +15,11 @@ import './style.css';
 // ==========================
 
 const app = document.querySelector('#app');
+const uiPanel = document.querySelector('.ui');
+const uiMinimizeBtn = document.querySelector('#uiMinimizeBtn');
+const modelTitle = document.querySelector('#modelTitle');
+const modelSelectBtn = document.querySelector('#modelSelectBtn');
+const modelDropdown = document.querySelector('#modelDropdown');
 const explodeBtn = document.querySelector('#explodeBtn');
 const darkModeBtn = document.querySelector('#darkModeBtn');
 const aoToggleBtn = document.querySelector('#aoToggleBtn');
@@ -32,10 +37,19 @@ const glowValue = document.querySelector('#glowValue');
 const statusText = document.querySelector('#statusText');
 const partName = document.querySelector('#partName');
 const selectionActions = document.querySelector('#selectionActions');
+const singleModeBtn = document.querySelector('#singleModeBtn');
+const stackModeBtn = document.querySelector('#stackModeBtn');
+const arrayModeBtn = document.querySelector('#arrayModeBtn');
+const tableModeBtn = document.querySelector('#tableModeBtn');
 const hidePartBtn = document.querySelector('#hidePartBtn');
 const showAllBtn = document.querySelector('#showAllBtn');
 
 if (!app) throw new Error('#app element not found');
+if (!uiPanel) throw new Error('.ui element not found');
+if (!uiMinimizeBtn) throw new Error('#uiMinimizeBtn element not found');
+if (!modelTitle) throw new Error('#modelTitle element not found');
+if (!modelSelectBtn) throw new Error('#modelSelectBtn element not found');
+if (!modelDropdown) throw new Error('#modelDropdown element not found');
 if (!explodeBtn) throw new Error('#explodeBtn element not found');
 if (!darkModeBtn) throw new Error('#darkModeBtn element not found');
 if (!aoToggleBtn) throw new Error('#aoToggleBtn element not found');
@@ -53,6 +67,10 @@ if (!glowValue) throw new Error('#glowValue element not found');
 if (!statusText) throw new Error('#statusText element not found');
 if (!partName) throw new Error('#partName element not found');
 if (!selectionActions) throw new Error('#selectionActions element not found');
+if (!singleModeBtn) throw new Error('#singleModeBtn element not found');
+if (!stackModeBtn) throw new Error('#stackModeBtn element not found');
+if (!arrayModeBtn) throw new Error('#arrayModeBtn element not found');
+if (!tableModeBtn) throw new Error('#tableModeBtn element not found');
 if (!hidePartBtn) throw new Error('#hidePartBtn element not found');
 if (!showAllBtn) throw new Error('#showAllBtn element not found');
 
@@ -61,6 +79,11 @@ if (!showAllBtn) throw new Error('#showAllBtn element not found');
 // ==========================
 
 const RHINO_TO_THREE_ROTATION_X = -Math.PI / 2;
+const MODEL_OPTIONS = [
+  '/model/DP400.3dm',
+  '/model/MANGAE.3dm',
+];
+const DEFAULT_MODEL_PATH = MODEL_OPTIONS[0];
 
 const LIGHT_BG = 0xf4f2ee;
 const DARK_BG = 0x050505;
@@ -83,8 +106,16 @@ const LIGHT_TARGET = {
   DIFFUSER: 'DIFFUSER',
 };
 
+const STACK_OFFSET_Y = 367;
+const MAX_STACK_LEVELS = 5;
+const ARRAY_OFFSET_X = 402;
+const MAX_ARRAY_COLUMNS = 5;
+const MAX_ADDED_MODULES = MAX_STACK_LEVELS + MAX_ARRAY_COLUMNS * (MAX_STACK_LEVELS + 1);
+
 let lightTarget = LIGHT_TARGET.DIFFUSER;
-let glowLevel = 0.35;
+let glowLevel = 0.2;
+let currentModelPath = DEFAULT_MODEL_PATH;
+let modelLoading = false;
 
 // ==========================
 // Scene
@@ -237,6 +268,9 @@ controls.enableDamping = true;
 controls.rotateSpeed = 0.72;
 controls.enablePan = true;
 controls.screenSpacePanning = false;
+controls.addEventListener('start', () => {
+  cameraViewPristine = false;
+});
 
 // ==========================
 // Lights
@@ -274,6 +308,17 @@ let darkMode = false;
 let ambientOcclusionEnabled = true;
 let outlineMode = false;
 let modelSize = 100;
+let stackCloneRoots = [];
+let arrayCloneRoots = [];
+let addedGeometryRoots = [];
+let arrayColumnCount = 0;
+let addedGeometryClearTimeline = null;
+let addedInstanceMeshes = [];
+let addedInstanceBaseMatrices = [];
+let addedInstanceModuleSlots = Array(MAX_ADDED_MODULES).fill(null);
+let activeCameraView = null;
+let cameraViewPristine = false;
+let ambientOcclusionConfigKey = '';
 
 let selected = null;
 let selectedGrid = null;
@@ -281,6 +326,9 @@ const hiddenParts = new Set();
 
 const parts = [];
 const originalMaterials = new Map();
+const materialCache = new Map();
+const edgeGeometryCache = new Map();
+const edgeMaterialCache = new Map();
 
 let edgeHelpers = [];
 
@@ -328,6 +376,45 @@ injectAnnotationStyles();
 createAnnotationOverlay();
 updateAmbientOcclusionButton();
 updateOutlineButton();
+
+function getModelTitleFromPath(path) {
+  return String(path || '')
+    .split('/')
+    .pop()
+    .replace(/\.[^.]+$/, '');
+}
+
+function updateModelTitle(path) {
+  modelTitle.textContent = getModelTitleFromPath(path);
+}
+
+function setModelDropdownOpen(open) {
+  modelDropdown.hidden = !open;
+  modelSelectBtn.setAttribute('aria-expanded', String(open));
+}
+
+function renderModelDropdown() {
+  modelDropdown.innerHTML = '';
+
+  MODEL_OPTIONS.forEach((path) => {
+    const optionButton = document.createElement('button');
+    optionButton.type = 'button';
+    optionButton.className = 'model-option-btn';
+    optionButton.textContent = getModelTitleFromPath(path);
+    optionButton.dataset.modelPath = path;
+    optionButton.classList.toggle('is-active', path === currentModelPath);
+
+    optionButton.addEventListener('click', () => {
+      setModelDropdownOpen(false);
+      loadModel(path);
+    });
+
+    modelDropdown.appendChild(optionButton);
+  });
+}
+
+updateModelTitle(currentModelPath);
+renderModelDropdown();
 
 const DOWNLOAD_PROGRESS_END = 86;
 const MIN_LOADING_INTRO_MS = 4600;
@@ -419,7 +506,7 @@ function startRandomLoadingCodeLoop() {
       getRandomLoadingCode(loadingCodeColumns),
       getRandomLoadingCode(loadingCodeColumns)
     );
-  }, 500);
+  }, 100);
 }
 
 function startLoadingCodeTyping() {
@@ -514,9 +601,96 @@ startLoadingCodeTyping();
 const loader = new Rhino3dmLoader();
 loader.setLibraryPath('https://cdn.jsdelivr.net/npm/rhino3dm@8.4.0/');
 
-loader.load(
-  '/model/test.3dm',
-  (object) => {
+function disposeObjectTree(object) {
+  object.traverse((child) => {
+    if (!child.isMesh) return;
+
+    child.geometry?.dispose?.();
+
+    if (Array.isArray(child.material)) {
+      child.material.forEach((material) => material?.dispose?.());
+    } else {
+      child.material?.dispose?.();
+    }
+  });
+}
+
+function clearCurrentModel() {
+  hideAnnotation();
+  clearSelection();
+  clearStackClone();
+  disposeAddedInstanceMeshes();
+  disposeEdgeHelpers();
+  hiddenParts.clear();
+  originalMaterials.clear();
+  parts.length = 0;
+  exploded = false;
+  explodeBtn.textContent = 'Explode';
+  partName.textContent = 'None';
+  updateSelectionActions();
+
+  if (modelRoot) {
+    scene.remove(modelRoot);
+    disposeObjectTree(modelRoot);
+    modelRoot = null;
+  }
+}
+
+function setModelControlsDisabled(disabled) {
+  explodeBtn.disabled = disabled;
+  darkModeBtn.disabled = disabled;
+  aoToggleBtn.disabled = disabled;
+  outlineToggleBtn.disabled = disabled;
+  singleModeBtn.disabled = disabled;
+  stackModeBtn.disabled = disabled || stackCloneRoots.length >= MAX_STACK_LEVELS;
+  arrayModeBtn.disabled = disabled || arrayColumnCount >= MAX_ARRAY_COLUMNS;
+  tableModeBtn.disabled = disabled;
+  glowSlider.disabled = disabled;
+  hidePartBtn.disabled = disabled || !selected;
+  showAllBtn.disabled = disabled || hiddenParts.size === 0;
+  viewButtons.forEach((button) => {
+    button.disabled = disabled;
+  });
+}
+
+function updateStackModeButtons() {
+  const stackCount = stackCloneRoots.length;
+  const hasStack = stackCount > 0;
+  const isMaxStack = stackCount >= MAX_STACK_LEVELS;
+
+  singleModeBtn.classList.toggle('is-active', !hasStack);
+  stackModeBtn.classList.toggle('is-active', hasStack);
+  stackModeBtn.disabled = modelLoading || isMaxStack;
+  stackModeBtn.textContent = isMaxStack ? 'Stack Max' : hasStack ? 'Stack +1' : 'Stack';
+}
+
+function updateArrayModeButton() {
+  const hasArray = arrayColumnCount > 0;
+  const isMaxArray = arrayColumnCount >= MAX_ARRAY_COLUMNS;
+
+  arrayModeBtn.classList.toggle('is-active', hasArray);
+  arrayModeBtn.disabled = modelLoading || isMaxArray;
+  arrayModeBtn.textContent = isMaxArray ? 'Array Max' : hasArray ? 'Array +1' : 'Array';
+}
+
+function loadModel(path, { initial = false } = {}) {
+  if (modelLoading) return;
+  if (!initial && path === currentModelPath && modelRoot) return;
+
+  modelLoading = true;
+  currentModelPath = path;
+  updateModelTitle(currentModelPath);
+  renderModelDropdown();
+  setModelControlsDisabled(true);
+  statusText.textContent = `Loading model: ${getModelTitleFromPath(path)}`;
+
+  if (modelRoot) {
+    clearCurrentModel();
+  }
+
+  loader.load(
+    path,
+    (object) => {
     setLoadingStage(88, 'PARSING GEOMETRY');
     modelRoot = object;
 
@@ -535,6 +709,7 @@ loader.load(
     createExplodePivots(modelRoot);
     saveOriginalMaterials();
     createEdgeHelpers();
+    createAddedInstanceMeshes();
 
     setLoadingStage(97, 'APPLYING MATERIALS');
     applyMaterialSystem();
@@ -547,14 +722,26 @@ loader.load(
     darkModeBtn.disabled = false;
     aoToggleBtn.disabled = false;
     outlineToggleBtn.disabled = false;
+    singleModeBtn.disabled = false;
+    arrayModeBtn.disabled = false;
+    tableModeBtn.disabled = false;
     glowSlider.disabled = false;
     updateSelectionActions();
     viewButtons.forEach((button) => {
       button.disabled = false;
     });
 
+    setDarkMode(true);
+    moveCameraToView('front');
+    renderModelDropdown();
+    modelLoading = false;
+    updateStackModeButtons();
+    updateArrayModeButton();
+
     statusText.textContent = `3DM loaded / Parts: ${parts.length} / Light: ${lightTarget}`;
-    completeLoadingScreen();
+    if (initial) {
+      completeLoadingScreen();
+    }
 
     console.log('3DM loaded:', modelRoot);
     console.log(`Explode parts: ${parts.length}`);
@@ -571,27 +758,37 @@ loader.load(
         topPanel: isTopPanelPart(p),
       }))
     );
-  },
-  (xhr) => {
+    },
+    (xhr) => {
     if (xhr.lengthComputable && xhr.total > 0) {
       const rawPercent = (xhr.loaded / xhr.total) * 100;
       const percent = rawPercent * (DOWNLOAD_PROGRESS_END / 100);
       const loadingLabel = getDownloadLoadingLabel(rawPercent);
       statusText.textContent = `Loading ${rawPercent.toFixed(1)}%`;
-      setLoadingProgress(percent, loadingLabel);
+      if (initial) {
+        setLoadingProgress(percent, loadingLabel);
+      }
       console.log(`Loading: ${rawPercent.toFixed(1)}%`);
     } else {
       const loadedMb = (xhr.loaded / 1024 / 1024).toFixed(2);
       statusText.textContent = `Loading 3DM... ${loadedMb}MB`;
-      setLoadingProgress(12, `STREAMING MODEL ${loadedMb}MB`);
+      if (initial) {
+        setLoadingProgress(12, `STREAMING MODEL ${loadedMb}MB`);
+      }
     }
-  },
-  (error) => {
+    },
+    (error) => {
+    modelLoading = false;
     statusText.textContent = '3DM load error - check console';
-    failLoadingScreen();
+    if (initial) {
+      failLoadingScreen();
+    }
     console.error('3DM load error:', error);
-  }
-);
+    }
+  );
+}
+
+loadModel(currentModelPath, { initial: true });
 
 // ==========================
 // Basic Helpers
@@ -609,18 +806,50 @@ function getModelSize(object) {
   return Math.max(size.x, size.y, size.z);
 }
 
+function getAmbientOcclusionQuality() {
+  const instanceCount = Math.max(getCurrentGeometryRoots().length, 1);
+
+  if (instanceCount >= 18) {
+    return { gtaoSamples: 64, denoiseSamples: 48, blendScale: 0.88 };
+  }
+
+  if (instanceCount >= 10) {
+    return { gtaoSamples: 96, denoiseSamples: 64, blendScale: 0.94 };
+  }
+
+  if (instanceCount >= 5) {
+    return { gtaoSamples: 128, denoiseSamples: 96, blendScale: 0.98 };
+  }
+
+  return { gtaoSamples: 192, denoiseSamples: 128, blendScale: 1 };
+}
+
 function updateAmbientOcclusion() {
   gtaoPass.enabled = ambientOcclusionEnabled;
   configureAmbientOcclusionBlend();
 
-  gtaoPass.blendIntensity = darkMode ? 2.2 : 1.75;
+  const aoQuality = getAmbientOcclusionQuality();
+  const roundedSize = Math.round(modelSize / 25) * 25;
+  const configKey = [
+    darkMode ? 1 : 0,
+    ambientOcclusionEnabled ? 1 : 0,
+    aoQuality.gtaoSamples,
+    aoQuality.denoiseSamples,
+    roundedSize,
+  ].join('|');
+
+  gtaoPass.blendIntensity = (darkMode ? 2.2 : 1.75) * aoQuality.blendScale;
+
+  if (configKey === ambientOcclusionConfigKey) return;
+
+  ambientOcclusionConfigKey = configKey;
   gtaoPass.updateGtaoMaterial({
     radius: Math.max(modelSize * 0.18, 24),
     distanceExponent: 1.2,
     thickness: Math.max(modelSize * 0.06, 8),
     distanceFallOff: 0.85,
     scale: darkMode ? 1.55 : 1.28,
-    samples: 192,
+    samples: aoQuality.gtaoSamples,
     screenSpaceRadius: false,
   });
 
@@ -631,7 +860,7 @@ function updateAmbientOcclusion() {
     radius: 12,
     radiusExponent: 1.9,
     rings: 4,
-    samples: 128,
+    samples: aoQuality.denoiseSamples,
   });
 }
 
@@ -695,6 +924,574 @@ function configureAmbientOcclusionBlend() {
 function getModelBottomY(object) {
   const box = new THREE.Box3().setFromObject(object);
   return box.min.y;
+}
+
+function disposeAddedInstanceMeshes() {
+  addedInstanceMeshes.forEach((instanceMesh) => {
+    scene.remove(instanceMesh);
+    instanceMesh.dispose?.();
+  });
+
+  addedInstanceMeshes = [];
+  addedInstanceBaseMatrices = [];
+  addedInstanceModuleSlots = Array(MAX_ADDED_MODULES).fill(null);
+}
+
+function createHiddenInstanceMatrix() {
+  return new THREE.Matrix4().makeScale(0, 0, 0);
+}
+
+function createAddedInstanceMeshes() {
+  disposeAddedInstanceMeshes();
+
+  modelRoot.updateMatrixWorld(true);
+
+  parts.forEach((part) => {
+    const source = part.mesh;
+    source.updateMatrixWorld(true);
+
+    const instanceMesh = new THREE.InstancedMesh(
+      source.geometry,
+      source.material,
+      MAX_ADDED_MODULES
+    );
+
+    instanceMesh.name = `AddedInstances_${part.name}`;
+    instanceMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    instanceMesh.frustumCulled = false;
+    instanceMesh.renderOrder = source.renderOrder;
+    instanceMesh.layers.mask = source.layers.mask;
+    instanceMesh.raycast = () => {};
+
+    const hiddenMatrix = createHiddenInstanceMatrix();
+    for (let index = 0; index < MAX_ADDED_MODULES; index += 1) {
+      instanceMesh.setMatrixAt(index, hiddenMatrix);
+    }
+    instanceMesh.instanceMatrix.needsUpdate = true;
+
+    scene.add(instanceMesh);
+    addedInstanceMeshes.push(instanceMesh);
+    addedInstanceBaseMatrices.push(source.matrixWorld.clone());
+  });
+}
+
+function allocateAddedInstanceSlot(root) {
+  const slot = addedInstanceModuleSlots.findIndex((entry) => entry === null);
+
+  if (slot === -1) return -1;
+
+  addedInstanceModuleSlots[slot] = root;
+  root.userData.instanceSlot = slot;
+  return slot;
+}
+
+function releaseAddedInstanceSlot(root) {
+  const slot = root.userData.instanceSlot;
+
+  if (typeof slot !== 'number') return;
+
+  const hiddenMatrix = createHiddenInstanceMatrix();
+  addedInstanceMeshes.forEach((instanceMesh) => {
+    instanceMesh.setMatrixAt(slot, hiddenMatrix);
+    instanceMesh.instanceMatrix.needsUpdate = true;
+  });
+
+  addedInstanceModuleSlots[slot] = null;
+  delete root.userData.instanceSlot;
+  root.removeFromParent();
+}
+
+function updateAddedInstanceRoot(root) {
+  const slot = root.userData.instanceSlot;
+  if (typeof slot !== 'number') return;
+
+  const rootMatrix = new THREE.Matrix4().compose(
+    root.position,
+    root.quaternion,
+    root.scale
+  );
+
+  const matrix = new THREE.Matrix4();
+
+  addedInstanceMeshes.forEach((instanceMesh, index) => {
+    matrix.multiplyMatrices(rootMatrix, addedInstanceBaseMatrices[index]);
+    instanceMesh.setMatrixAt(slot, matrix);
+    instanceMesh.instanceMatrix.needsUpdate = true;
+  });
+}
+
+function getCurrentGeometryRoots() {
+  return [modelRoot, ...addedGeometryRoots].filter(Boolean);
+}
+
+function registerAddedGeometryRoot(root, type) {
+  root.userData.addedGeometryType = type;
+  allocateAddedInstanceSlot(root);
+  updateAddedInstanceRoot(root);
+  addedGeometryRoots.push(root);
+
+  if (type === 'stack') {
+    stackCloneRoots.push(root);
+    return;
+  }
+
+  if (type === 'array') {
+    arrayCloneRoots.push(root);
+  }
+}
+
+function unregisterAddedGeometryRoots(roots) {
+  const removeSet = new Set(roots);
+
+  roots.forEach(releaseAddedInstanceSlot);
+
+  addedGeometryRoots = addedGeometryRoots.filter((root) => !removeSet.has(root));
+  stackCloneRoots = stackCloneRoots.filter((root) => !removeSet.has(root));
+  arrayCloneRoots = arrayCloneRoots.filter((root) => !removeSet.has(root));
+}
+
+function getCurrentGeometryBox() {
+  const box = new THREE.Box3();
+  const roots = getCurrentGeometryRoots();
+
+  roots.forEach((root) => {
+    if (root.userData?.isAddedInstanceRoot && root.userData.baseBox) {
+      box.union(root.userData.baseBox.clone().translate(root.position));
+      return;
+    }
+
+    root.updateMatrixWorld(true);
+    box.union(new THREE.Box3().setFromObject(root));
+  });
+
+  return box;
+}
+
+function getCurrentGeometryCenter() {
+  const box = getCurrentGeometryBox();
+
+  if (box.isEmpty()) {
+    return new THREE.Vector3();
+  }
+
+  return box.getCenter(new THREE.Vector3());
+}
+
+function getCurrentGeometrySize() {
+  const box = getCurrentGeometryBox();
+
+  if (box.isEmpty()) {
+    return modelSize;
+  }
+
+  const size = box.getSize(new THREE.Vector3());
+  return Math.max(size.x, size.y, size.z);
+}
+
+function refreshCurrentGeometryMetrics() {
+  modelSize = getCurrentGeometrySize();
+  updateOrthographicFrustum();
+  updateAmbientOcclusion();
+  updateGroundTheme();
+  syncGroundCamera();
+  updateAnnotationPosition();
+}
+
+function syncCameraTargetToCurrentGeometry() {
+  const target = getCurrentGeometryCenter();
+  const delta = target.clone().sub(controls.target);
+
+  camera.position.add(delta);
+  controls.target.copy(target);
+  refreshCurrentGeometryMetrics();
+  controls.update();
+}
+
+function updateCameraAfterGeometryChange() {
+  if (activeCameraView && cameraViewPristine) {
+    syncCameraTargetToCurrentGeometry();
+    return;
+  }
+
+  refreshCurrentGeometryMetrics();
+  controls.update();
+}
+
+function clearStackClone() {
+  const roots = [...addedGeometryRoots];
+
+  roots.forEach((cloneRoot) => {
+    gsap.killTweensOf(cloneRoot.position);
+    scene.remove(cloneRoot);
+  });
+
+  unregisterAddedGeometryRoots(roots);
+  arrayColumnCount = 0;
+  updateArrayModeButton();
+  if (modelRoot) {
+    updateCameraAfterGeometryChange();
+  }
+  updateStackModeButtons();
+}
+
+function clearArrayClone({ syncCamera = true } = {}) {
+  const roots = [...arrayCloneRoots];
+
+  roots.forEach((cloneRoot) => {
+    gsap.killTweensOf(cloneRoot.position);
+    scene.remove(cloneRoot);
+  });
+
+  unregisterAddedGeometryRoots(roots);
+  arrayColumnCount = 0;
+  updateArrayModeButton();
+
+  if (syncCamera && modelRoot) {
+    updateCameraAfterGeometryChange();
+  }
+}
+
+function setCloneRootVisible(root, visible) {
+  if (root.userData?.isAddedInstanceRoot) {
+    root.scale.setScalar(visible ? 1 : 0);
+    root.visible = visible;
+    updateAddedInstanceRoot(root);
+    return;
+  }
+
+  root.visible = visible;
+
+  root.traverse((child) => {
+    if (child.isMesh || child.isLine || child.isLineSegments) {
+      child.visible = visible;
+    }
+  });
+}
+
+function setCloneRootGrainVisibility(root, visibleRatio) {
+  if (root.userData?.isAddedInstanceRoot) {
+    const visible = Math.random() < visibleRatio;
+    root.visible = visible;
+    root.scale.setScalar(visible ? 1 : 0);
+    updateAddedInstanceRoot(root);
+    return;
+  }
+
+  root.visible = true;
+
+  root.traverse((child) => {
+    if (child.isMesh || child.isLine || child.isLineSegments) {
+      child.visible = Math.random() < visibleRatio;
+    }
+  });
+}
+
+function removeCloneRoots(roots) {
+  roots.forEach((root) => {
+    gsap.killTweensOf(root.position);
+    scene.remove(root);
+  });
+
+  unregisterAddedGeometryRoots(roots);
+}
+
+function clearAddedGeometryWithGlitch() {
+  const roots = [...addedGeometryRoots];
+
+  if (addedGeometryClearTimeline) {
+    addedGeometryClearTimeline.kill();
+    addedGeometryClearTimeline = null;
+  }
+
+  if (roots.length === 0) {
+    clearStackClone();
+    statusText.textContent = 'Single mode';
+    return;
+  }
+
+  addedGeometryRoots = [];
+  stackCloneRoots = [];
+  arrayCloneRoots = [];
+  arrayColumnCount = 0;
+  updateStackModeButtons();
+  updateArrayModeButton();
+
+  if (modelRoot) {
+    updateCameraAfterGeometryChange();
+  }
+
+  statusText.textContent = 'Single mode / Clearing added geometry';
+
+  addedGeometryClearTimeline = gsap.timeline({
+    onComplete: () => {
+      removeCloneRoots(roots);
+      addedGeometryClearTimeline = null;
+      statusText.textContent = 'Single mode';
+    },
+  });
+
+  for (let time = 0; time <= 0.9; time += 0.1) {
+    addedGeometryClearTimeline.call(() => {
+      roots.forEach((root) => {
+        setCloneRootGrainVisibility(root, 0.18 + Math.random() * 0.5);
+      });
+    }, null, time);
+
+    addedGeometryClearTimeline.call(() => {
+      roots.forEach((root) => setCloneRootVisible(root, false));
+    }, null, time + 0.035);
+
+    addedGeometryClearTimeline.call(() => {
+      roots.forEach((root) => {
+        setCloneRootGrainVisibility(root, 0.28 + Math.random() * 0.55);
+      });
+    }, null, time + 0.065);
+  }
+
+  addedGeometryClearTimeline.call(() => {
+    roots.forEach((root) => setCloneRootVisible(root, false));
+  }, null, 1.0);
+}
+
+function getCameraViewUpDirection() {
+  return new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion).normalize();
+}
+
+function getCameraViewRightDirection() {
+  return new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).normalize();
+}
+
+function getStackEntranceOffset(object) {
+  const box = object.userData?.isAddedInstanceRoot && object.userData.baseBox
+    ? object.userData.baseBox.clone().translate(object.position)
+    : new THREE.Box3().setFromObject(object);
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const viewHeight = size.length();
+
+  if (camera.isOrthographicCamera) {
+    const frustumHeight = (camera.top - camera.bottom) / camera.zoom;
+    return frustumHeight * 0.52 + viewHeight * 0.18;
+  }
+
+  const forward = new THREE.Vector3();
+  camera.getWorldDirection(forward);
+
+  const distance = Math.max(
+    center.clone().sub(camera.position).dot(forward),
+    modelSize
+  );
+  const frustumHeight = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)) * distance;
+
+  return frustumHeight * 0.52 + viewHeight * 0.18;
+}
+
+function animateCloneToPosition(cloneRoot, targetPosition, entranceDirection) {
+  if (!cloneRoot) return;
+
+  const entranceOffset = getStackEntranceOffset(cloneRoot);
+  const startPosition = targetPosition.clone().addScaledVector(entranceDirection, entranceOffset);
+
+  cloneRoot.position.copy(startPosition);
+  cloneRoot.updateMatrixWorld(true);
+
+  gsap.killTweensOf(cloneRoot.position);
+
+  const settlingPosition = targetPosition.clone().lerp(startPosition, 0.045);
+  const entryPosition = targetPosition.clone().lerp(startPosition, 0.84);
+  const tl = gsap.timeline({
+    onUpdate: () => {
+      cloneRoot.updateMatrixWorld(true);
+      updateAddedInstanceRoot(cloneRoot);
+    },
+  });
+
+  tl.to(cloneRoot.position, {
+    x: entryPosition.x,
+    y: entryPosition.y,
+    z: entryPosition.z,
+    duration: 0.15,
+    ease: 'power3.in',
+  });
+
+  tl.to(cloneRoot.position, {
+    x: settlingPosition.x,
+    y: settlingPosition.y,
+    z: settlingPosition.z,
+    duration: 0.5,
+    ease: 'power2.in',
+  });
+
+  tl.to(cloneRoot.position, {
+    x: settlingPosition.x,
+    y: settlingPosition.y,
+    z: settlingPosition.z,
+    duration: 0.18,
+    ease: 'none',
+  });
+
+  tl.to(cloneRoot.position, {
+    x: targetPosition.x,
+    y: targetPosition.y,
+    z: targetPosition.z,
+    duration: 0.4,
+    ease: 'power3.out',
+  });
+}
+
+function animateStackCloneToPosition(cloneRoot, targetPosition) {
+  animateCloneToPosition(cloneRoot, targetPosition, getCameraViewUpDirection());
+}
+
+function animateArrayCloneToPosition(cloneRoot, targetPosition) {
+  animateCloneToPosition(cloneRoot, targetPosition, getCameraViewRightDirection());
+}
+
+function getCachedEdgeGeometry(part) {
+  const key = part.mesh.geometry.uuid;
+
+  if (!edgeGeometryCache.has(key)) {
+    edgeGeometryCache.set(key, new THREE.EdgesGeometry(part.mesh.geometry, 30));
+  }
+
+  return edgeGeometryCache.get(key);
+}
+
+function getCachedEdgeMaterial() {
+  const key = darkMode ? 'dark' : 'light';
+
+  if (!edgeMaterialCache.has(key)) {
+    edgeMaterialCache.set(key, new THREE.LineBasicMaterial({
+      color: darkMode ? 0xffffff : 0x050505,
+      transparent: true,
+      opacity: darkMode ? 0.95 : 0.72,
+      depthTest: true,
+    }));
+  }
+
+  return edgeMaterialCache.get(key);
+}
+
+function createAddedGeometryEdges(root) {
+  parts.forEach((part) => {
+    if (!part.mesh.geometry) return;
+
+    const edgeLine = new THREE.LineSegments(
+      getCachedEdgeGeometry(part),
+      getCachedEdgeMaterial()
+    );
+
+    const source = part.mesh;
+    source.updateMatrixWorld(true);
+    source.matrixWorld.decompose(edgeLine.position, edgeLine.quaternion, edgeLine.scale);
+
+    edgeLine.name = `AddedEdge_${part.name}`;
+    edgeLine.visible = darkMode || outlineMode;
+    edgeLine.layers.disable(BLOOM_LAYER);
+    root.add(edgeLine);
+  });
+}
+
+function createRenderCloneRoot(name, type) {
+  const cloneRoot = new THREE.Group();
+  cloneRoot.name = name;
+  cloneRoot.userData.isAddedGeometry = true;
+  cloneRoot.userData.isAddedInstanceRoot = true;
+  cloneRoot.userData.addedGeometryType = type;
+  cloneRoot.userData.baseBox = new THREE.Box3().setFromObject(modelRoot);
+  createAddedGeometryEdges(cloneRoot);
+  scene.add(cloneRoot);
+
+  return cloneRoot;
+}
+
+function createStackClone() {
+  if (!modelRoot) return;
+  if (stackCloneRoots.length >= MAX_STACK_LEVELS) return;
+
+  modelRoot.updateMatrixWorld(true);
+  const baseBottomY = getModelBottomY(modelRoot);
+  const stackLevel = stackCloneRoots.length + 1;
+  const stackOffsetY = STACK_OFFSET_Y * stackLevel;
+  const pendingAnimations = [];
+
+  const cloneRoot = createRenderCloneRoot(
+    `${modelRoot.name || 'Model'}_StackClone_${stackLevel}`,
+    'stack'
+  );
+
+  cloneRoot.updateMatrixWorld(true);
+
+  const cloneBottomY = cloneRoot.userData.baseBox.min.y + cloneRoot.position.y;
+  cloneRoot.position.y += baseBottomY + stackOffsetY - cloneBottomY;
+  const targetPosition = cloneRoot.position.clone();
+  cloneRoot.updateMatrixWorld(true);
+  updateAddedInstanceRoot(cloneRoot);
+
+  registerAddedGeometryRoot(cloneRoot, 'stack');
+  pendingAnimations.push({ cloneRoot, targetPosition });
+
+  for (let columnIndex = 1; columnIndex <= arrayColumnCount; columnIndex += 1) {
+    pendingAnimations.push(createArrayClone(columnIndex, stackLevel, baseBottomY));
+  }
+
+  applyMaterialSystem();
+  updateEdgeHelpersAppearance();
+  updateStackModeButtons();
+  updateArrayModeButton();
+  updateCameraAfterGeometryChange();
+
+  pendingAnimations.forEach(({ cloneRoot: pendingCloneRoot, targetPosition: pendingTargetPosition }) => {
+    animateStackCloneToPosition(pendingCloneRoot, pendingTargetPosition);
+  });
+
+  statusText.textContent = `Stack ${stackLevel} created / Columns: ${arrayColumnCount + 1} / Offset: ${stackOffsetY}`;
+}
+
+function createArrayClone(columnIndex, level, baseBottomY) {
+  const cloneRoot = createRenderCloneRoot(
+    `${modelRoot.name || 'Model'}_ArrayClone_${columnIndex}_${level + 1}`,
+    'array'
+  );
+
+  cloneRoot.updateMatrixWorld(true);
+
+  const cloneBottomY = cloneRoot.userData.baseBox.min.y + cloneRoot.position.y;
+  cloneRoot.position.x += ARRAY_OFFSET_X * columnIndex;
+  cloneRoot.position.y += baseBottomY + STACK_OFFSET_Y * level - cloneBottomY;
+  const targetPosition = cloneRoot.position.clone();
+  cloneRoot.updateMatrixWorld(true);
+  updateAddedInstanceRoot(cloneRoot);
+
+  registerAddedGeometryRoot(cloneRoot, 'array');
+  return { cloneRoot, targetPosition };
+}
+
+function createArrayCloneColumn() {
+  if (!modelRoot) return;
+  if (arrayColumnCount >= MAX_ARRAY_COLUMNS) return;
+
+  modelRoot.updateMatrixWorld(true);
+  const baseBottomY = getModelBottomY(modelRoot);
+  const stackLevels = stackCloneRoots.length + 1;
+  const columnIndex = arrayColumnCount + 1;
+  const pendingAnimations = [];
+
+  for (let level = 0; level < stackLevels; level += 1) {
+    pendingAnimations.push(createArrayClone(columnIndex, level, baseBottomY));
+  }
+
+  arrayColumnCount = columnIndex;
+  applyMaterialSystem();
+  updateEdgeHelpersAppearance();
+  updateArrayModeButton();
+  updateCameraAfterGeometryChange();
+
+  pendingAnimations.forEach(({ cloneRoot, targetPosition }) => {
+    animateArrayCloneToPosition(cloneRoot, targetPosition);
+  });
+
+  statusText.textContent = `Array ${columnIndex} created / Copies: ${stackLevels} / Offset X: ${ARRAY_OFFSET_X * columnIndex}`;
 }
 
 function createVisualGroundMaterial() {
@@ -796,8 +1593,8 @@ function updateGroundTheme() {
   visualGround.material.uniforms.baseColor.value.setHex(darkMode ? DARK_BG : 0xffffff);
   visualGround.material.uniforms.lineColor.value.setHex(0x405a5a);
   visualGround.material.uniforms.majorLineColor.value.setHex(0x6f8585);
-  visualGround.material.uniforms.minorGridSize.value = Math.max(modelSize * 0.08, 24);
-  visualGround.material.uniforms.majorGridSize.value = Math.max(modelSize * 0.42, 120);
+  visualGround.material.uniforms.minorGridSize.value = 28;
+  visualGround.material.uniforms.majorGridSize.value = 140;
   updateVisualGroundCameraStyle();
   visualGround.material.needsUpdate = true;
 }
@@ -809,20 +1606,21 @@ function updateVisualGroundCameraStyle() {
     ? 0.42
     : 0.0;
 
-  visualGround.material.uniforms.fadeDistance.value = Math.max(modelSize * 8.0, 1400);
+  visualGround.material.uniforms.fadeDistance.value = 1800;
 }
 
 function updateVisualGroundPosition() {
   if (!visualGround) return;
 
-  visualGround.position.x = controls.target.x;
+  visualGround.position.x = 0;
   visualGround.position.y = visualGroundY;
-  visualGround.position.z = controls.target.z;
+  visualGround.position.z = 0;
 }
 
 function updateOrthographicFrustum() {
   const aspect = window.innerWidth / window.innerHeight;
-  const viewSize = Math.max(modelSize * 2.1, 100);
+  const currentSize = getCurrentGeometrySize();
+  const viewSize = Math.max(currentSize * 2.1, 100);
   const halfHeight = viewSize / 2;
   const halfWidth = halfHeight * aspect;
 
@@ -830,8 +1628,8 @@ function updateOrthographicFrustum() {
   orthographicCamera.right = halfWidth;
   orthographicCamera.top = halfHeight;
   orthographicCamera.bottom = -halfHeight;
-  orthographicCamera.near = Math.max(modelSize / 100, 0.1);
-  orthographicCamera.far = Math.max(modelSize * 100, 10000);
+  orthographicCamera.near = Math.max(currentSize / 100, 0.1);
+  orthographicCamera.far = Math.max(currentSize * 100, 10000);
   orthographicCamera.updateProjectionMatrix();
 }
 
@@ -857,9 +1655,7 @@ function syncGroundCamera() {
     groundPerspectiveCamera.quaternion.copy(camera.quaternion);
     groundPerspectiveCamera.up.copy(camera.up);
 
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
-    const distance = Math.max(modelSize * 4.8, 900);
-    groundPerspectiveCamera.position.copy(controls.target).addScaledVector(forward, -distance);
+    groundPerspectiveCamera.position.copy(camera.position);
     groundPerspectiveCamera.updateProjectionMatrix();
   }
 
@@ -870,7 +1666,7 @@ function setActiveCamera(nextCamera) {
   if (camera === nextCamera) {
     if (camera.isPerspectiveCamera) {
       camera.up.set(0, 1, 0);
-      controls.target.set(0, 0, 0);
+      controls.target.copy(getCurrentGeometryCenter());
     }
 
     updateCameraControlFeel();
@@ -897,7 +1693,7 @@ function setActiveCamera(nextCamera) {
   gtaoPass.camera = camera;
   controls.object = camera;
   if (camera.isPerspectiveCamera) {
-    controls.target.set(0, 0, 0);
+    controls.target.copy(getCurrentGeometryCenter());
   }
   controls.update();
   updateCameraControlFeel();
@@ -912,6 +1708,7 @@ function updateCameraControlFeel() {
 function frameObject(object) {
   const box = new THREE.Box3().setFromObject(object);
   const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z);
 
   if (maxDim === 0) return;
@@ -920,16 +1717,18 @@ function frameObject(object) {
 
   setActiveCamera(perspectiveCamera);
   perspectiveCamera.up.set(0, 1, 0);
-  perspectiveCamera.position.set(distance, distance * 0.7, distance);
+  perspectiveCamera.position.copy(center).add(new THREE.Vector3(distance, distance * 0.7, distance));
   perspectiveCamera.near = maxDim / 100;
   perspectiveCamera.far = maxDim * 100;
   perspectiveCamera.updateProjectionMatrix();
   updateOrthographicFrustum();
 
-  controls.target.set(0, 0, 0);
+  controls.target.copy(center);
   controls.update();
 
   setActiveViewButton(null);
+  activeCameraView = null;
+  cameraViewPristine = false;
 }
 
 function getCameraViewDirection(view) {
@@ -992,6 +1791,10 @@ function applyCameraUpForView(view) {
 function moveCameraToView(view) {
   if (!modelRoot) return;
 
+  activeCameraView = view;
+  cameraViewPristine = true;
+  modelSize = getCurrentGeometrySize();
+
   if (isIsoView(view)) {
     updateOrthographicFrustum();
     setActiveCamera(orthographicCamera);
@@ -1005,7 +1808,7 @@ function moveCameraToView(view) {
     direction.normalize();
   }
 
-  const target = new THREE.Vector3(0, 0, 0);
+  const target = getCurrentGeometryCenter();
   const distance = isIsoView(view)
     ? Math.max(modelSize * 3.2, 100)
     : Math.max(modelSize * 2.6, camera.position.distanceTo(controls.target));
@@ -1242,8 +2045,23 @@ function isBloomOccluderObject(obj) {
 // Material System
 // ==========================
 
+function getMaterialCacheKey(type) {
+  const glowPercent = Math.round(glowLevel * 100);
+  return `${type}|dark:${darkMode ? 1 : 0}|light:${lightTarget}|glow:${glowPercent}`;
+}
+
+function getCachedMaterial(type, factory) {
+  const key = getMaterialCacheKey(type);
+
+  if (!materialCache.has(key)) {
+    materialCache.set(key, factory());
+  }
+
+  return materialCache.get(key);
+}
+
 function createPolycarbonMaterial() {
-  return new THREE.MeshPhysicalMaterial({
+  return getCachedMaterial('polycarbon', () => new THREE.MeshPhysicalMaterial({
     color: darkMode ? 0xd8d8d4 : 0xe8e6dc,
     roughness: 0.98,
     metalness: 0.0,
@@ -1256,11 +2074,11 @@ function createPolycarbonMaterial() {
     clearcoatRoughness: 1.0,
     side: THREE.DoubleSide,
     depthWrite: false,
-  });
+  }));
 }
 
 function createGlassMaterial() {
-  return new THREE.MeshPhysicalMaterial({
+  return getCachedMaterial('glass', () => new THREE.MeshPhysicalMaterial({
     color: darkMode ? 0xf5f5f2 : 0xffffff,
     roughness: darkMode ? 0.16 : 0.18,
     metalness: 0.0,
@@ -1273,7 +2091,7 @@ function createGlassMaterial() {
     clearcoatRoughness: 0.12,
     side: THREE.DoubleSide,
     depthWrite: false,
-  });
+  }));
 }
 
 function createLedMaterial(isLightOwner = false) {
@@ -1281,13 +2099,13 @@ function createLedMaterial(isLightOwner = false) {
     ? THREE.MathUtils.lerp(0.1, darkMode ? 4.2 : 1.6, glowLevel)
     : 0.0;
 
-  return new THREE.MeshStandardMaterial({
+  return getCachedMaterial(isLightOwner ? 'led-on' : 'led-off', () => new THREE.MeshStandardMaterial({
     color: isLightOwner ? 0x00ffff : 0x202020,
     emissive: 0x00ffff,
     emissiveIntensity,
     roughness: 0.03,
     metalness: 0.0,
-  });
+  }));
 }
 
 function createPolycarbonLightMaterial() {
@@ -1297,68 +2115,110 @@ function createPolycarbonLightMaterial() {
     glowLevel
   );
 
-  return new THREE.MeshStandardMaterial({
+  return getCachedMaterial('polycarbon-light', () => new THREE.MeshStandardMaterial({
     color: 0x00ffff,
     emissive: 0x00ffff,
     emissiveIntensity,
     roughness: 0.03,
     metalness: 0.0,
-  });
+  }));
 }
 
 function createDarkMaterial() {
-  return new THREE.MeshStandardMaterial({
+  return getCachedMaterial('dark', () => new THREE.MeshStandardMaterial({
     color: 0x070707,
     roughness: 0.78,
     metalness: 0.08,
+  }));
+}
+
+function getOriginalPartByName(name) {
+  return parts.find((part) => part.name === name) || null;
+}
+
+function applyMaterialToMesh(mesh, part, originalMaterial = null) {
+  mesh.layers.disable(BLOOM_LAYER);
+
+  if (isLedPart(part)) {
+    mesh.material = createLedMaterial(lightTarget === LIGHT_TARGET.LED);
+
+    if (lightTarget === LIGHT_TARGET.LED) {
+      mesh.layers.enable(BLOOM_LAYER);
+    }
+
+    return;
+  }
+
+  if (isPolycarbonPart(part)) {
+    mesh.material =
+      lightTarget === LIGHT_TARGET.DIFFUSER
+        ? createPolycarbonLightMaterial()
+        : createPolycarbonMaterial();
+
+    if (lightTarget === LIGHT_TARGET.DIFFUSER) {
+      mesh.layers.enable(BLOOM_LAYER);
+    }
+
+    return;
+  }
+
+  if (isGlassPart(part)) {
+    mesh.material = createGlassMaterial();
+    mesh.layers.disable(BLOOM_LAYER);
+    mesh.renderOrder = 10;
+    return;
+  }
+
+  if (darkMode) {
+    mesh.material = createDarkMaterial();
+    return;
+  }
+
+  if (originalMaterial) {
+    mesh.material = originalMaterial;
+  }
+}
+
+function applyMaterialSystemToCloneRoot(root) {
+  if (root.userData?.isAddedInstanceRoot) return;
+
+  root.traverse((child) => {
+    if (!child.isMesh) return;
+    if (child.name?.startsWith('SelectionGrid_')) return;
+
+    const name = getObjectName(child);
+    const originalPart = getOriginalPartByName(name);
+
+    if (!originalPart) return;
+
+    applyMaterialToMesh(
+      child,
+      originalPart,
+      originalMaterials.get(originalPart.mesh.uuid)
+    );
   });
 }
 
 function applyMaterialSystem() {
   parts.forEach((part) => {
-    part.mesh.layers.disable(BLOOM_LAYER);
-
-    if (isLedPart(part)) {
-      part.mesh.material = createLedMaterial(lightTarget === LIGHT_TARGET.LED);
-
-      if (lightTarget === LIGHT_TARGET.LED) {
-        part.mesh.layers.enable(BLOOM_LAYER);
-      }
-
-      return;
-    }
-
-    if (isPolycarbonPart(part)) {
-      part.mesh.material =
-        lightTarget === LIGHT_TARGET.DIFFUSER
-          ? createPolycarbonLightMaterial()
-          : createPolycarbonMaterial();
-
-      if (lightTarget === LIGHT_TARGET.DIFFUSER) {
-        part.mesh.layers.enable(BLOOM_LAYER);
-      }
-
-      return;
-    }
-
-    if (isGlassPart(part)) {
-      part.mesh.material = createGlassMaterial();
-      part.mesh.layers.disable(BLOOM_LAYER);
-      part.mesh.renderOrder = 10;
-      return;
-    }
-
-    if (darkMode) {
-      part.mesh.material = createDarkMaterial();
-      return;
-    }
-
-    const originalMaterial = originalMaterials.get(part.mesh.uuid);
-
-    if (originalMaterial) {
-      part.mesh.material = originalMaterial;
-    }
+    applyMaterialToMesh(
+      part.mesh,
+      part,
+      originalMaterials.get(part.mesh.uuid)
+    );
   });
+
+  addedInstanceMeshes.forEach((instanceMesh, index) => {
+    const part = parts[index];
+    if (!part) return;
+
+    instanceMesh.material = part.mesh.material;
+    instanceMesh.layers.mask = part.mesh.layers.mask;
+    instanceMesh.renderOrder = part.mesh.renderOrder;
+    instanceMesh.instanceMatrix.needsUpdate = true;
+  });
+
+  addedGeometryRoots.forEach(applyMaterialSystemToCloneRoot);
 }
 
 function transferLightTo(target) {
@@ -1381,17 +2241,10 @@ function createEdgeHelpers() {
   parts.forEach((part) => {
     if (!part.mesh.geometry) return;
 
-    const edgesGeometry = new THREE.EdgesGeometry(part.mesh.geometry, 30);
-
-    const edgeMaterial = new THREE.LineBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 0.95,
-      depthTest: true,
-      linewidth: 2,
-    });
-
-    const edgeLine = new THREE.LineSegments(edgesGeometry, edgeMaterial);
+    const edgeLine = new THREE.LineSegments(
+      getCachedEdgeGeometry(part),
+      getCachedEdgeMaterial()
+    );
     edgeLine.name = `Edge_${part.name}`;
     edgeLine.visible = false;
     edgeLine.layers.disable(BLOOM_LAYER);
@@ -1410,7 +2263,16 @@ function updateEdgeHelpersAppearance() {
   const color = darkMode ? 0xffffff : 0x050505;
   const opacity = darkMode ? 0.95 : 0.72;
 
-  edgeHelpers.forEach((edge) => {
+  const addedEdges = [];
+  addedGeometryRoots.forEach((root) => {
+    root.traverse((child) => {
+      if (child.isLineSegments && child.name?.startsWith('AddedEdge_')) {
+        addedEdges.push(child);
+      }
+    });
+  });
+
+  [...edgeHelpers, ...addedEdges].forEach((edge) => {
     edge.visible = visible;
     edge.layers.disable(BLOOM_LAYER);
     edge.material.color.setHex(color);
@@ -1422,9 +2284,15 @@ function updateEdgeHelpersAppearance() {
 
 function disposeEdgeHelpers() {
   edgeHelpers.forEach((edge) => {
-    edge.geometry?.dispose?.();
-    edge.material?.dispose?.();
     edge.removeFromParent();
+  });
+
+  addedGeometryRoots.forEach((root) => {
+    root.traverse((child) => {
+      if (child.isLineSegments && child.name?.startsWith('AddedEdge_')) {
+        child.removeFromParent();
+      }
+    });
   });
 }
 
@@ -1469,6 +2337,7 @@ function applyGlowLevel(level) {
 
   const percent = Math.round(glowLevel * 100);
   glowValue.textContent = `${percent}%`;
+  glowSlider.style.setProperty('--glow-percent', `${percent}%`);
 
   bloomPass.strength = THREE.MathUtils.lerp(
     0.0,
@@ -1488,36 +2357,7 @@ function applyGlowLevel(level) {
     glowLevel
   );
 
-  parts.forEach((part) => {
-    if (isLedPart(part)) {
-      part.mesh.material = createLedMaterial(lightTarget === LIGHT_TARGET.LED);
-      part.mesh.layers.disable(BLOOM_LAYER);
-
-      if (lightTarget === LIGHT_TARGET.LED) {
-        part.mesh.layers.enable(BLOOM_LAYER);
-      }
-    }
-
-    if (isPolycarbonPart(part)) {
-      part.mesh.material =
-        lightTarget === LIGHT_TARGET.DIFFUSER
-          ? createPolycarbonLightMaterial()
-          : createPolycarbonMaterial();
-
-      part.mesh.layers.disable(BLOOM_LAYER);
-
-      if (lightTarget === LIGHT_TARGET.DIFFUSER) {
-        part.mesh.layers.enable(BLOOM_LAYER);
-      }
-    }
-
-    if (isGlassPart(part)) {
-      part.mesh.material = createGlassMaterial();
-      part.mesh.layers.disable(BLOOM_LAYER);
-      part.mesh.renderOrder = 10;
-    }
-  });
-
+  applyMaterialSystem();
 }
 
 glowSlider.addEventListener('input', (event) => {
@@ -1567,6 +2407,21 @@ aoToggleBtn.addEventListener('click', () => {
 
 outlineToggleBtn.addEventListener('click', () => {
   setOutlineMode(!outlineMode);
+});
+
+uiMinimizeBtn.addEventListener('click', () => {
+  const minimized = !uiPanel.classList.contains('is-minimized');
+  uiPanel.classList.toggle('is-minimized', minimized);
+  uiMinimizeBtn.setAttribute('aria-label', minimized ? 'Expand UI' : 'Minimize UI');
+});
+
+modelSelectBtn.addEventListener('click', () => {
+  setModelDropdownOpen(modelDropdown.hidden);
+});
+
+document.addEventListener('pointerdown', (event) => {
+  if (event.target.closest?.('.model-selector')) return;
+  setModelDropdownOpen(false);
 });
 
 // ==========================
@@ -1880,6 +2735,11 @@ function showAllHiddenParts() {
 
 hidePartBtn.addEventListener('click', hideSelectedPart);
 showAllBtn.addEventListener('click', showAllHiddenParts);
+singleModeBtn.addEventListener('click', () => {
+  clearAddedGeometryWithGlitch();
+});
+stackModeBtn.addEventListener('click', createStackClone);
+arrayModeBtn.addEventListener('click', createArrayCloneColumn);
 
 function handleSelectionClick(event) {
   if (!modelRoot || parts.length === 0) return;
